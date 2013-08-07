@@ -1,0 +1,192 @@
+---
+<%
+director_uuid = ENV['MICRO_BOSH_UUID']
+cf_release = ENV['RELEASE_VERSION']
+ip_address = ENV['DIRECTOR_IP']
+dynamic_net_id = ENV['BOSH_DYNAMIC_NET_ID']
+%>
+name: bosh-openstack
+director_uuid: <%= director_uuid %>
+
+release:
+  name: bosh
+  version: latest
+
+compilation:
+  workers: 6
+  network: default
+  reuse_compilation_vms: true
+  cloud_properties:
+    instance_type: m1.small
+
+update:
+  canaries: 1
+  canary_watch_time: 3000-120000
+  update_watch_time: 3000-120000
+  max_in_flight: 4
+  max_errors: 1
+
+networks:
+  - name: floating
+    type: vip
+    cloud_properties: {}
+  - name: default
+    type: dynamic
+    cloud_properties:
+      <% if dynamic_net_id %>
+      net_id: <%= dynamic_net_id %>
+      <% end %>
+      security_groups:
+        - default
+
+resource_pools:
+  - name: common
+    network: default
+    size: 7
+    stemcell:
+      name: <%= ENV['STEMCELL_NAME'] %>
+      version: <%= ENV['STEMCELL_VERSION'] %>
+    cloud_properties:
+      instance_type: m1.small
+
+jobs:
+  - name: nats
+    template: nats
+    instances: 1
+    resource_pool: common
+    networks:
+      - name: default
+        default: [dns, gateway]
+
+  - name: redis
+    template: redis
+    instances: 1
+    resource_pool: common
+    networks:
+      - name: default
+        default: [dns, gateway]
+
+  - name: postgres
+    template: postgres
+    instances: 1
+    resource_pool: common
+    persistent_disk: 16384
+    networks:
+      - name: default
+        default: [dns, gateway]
+
+  - name: powerdns
+    template: powerdns
+    instances: 1
+    resource_pool: common
+    networks:
+      - name: default
+        default: [dns, gateway]
+      - name: floating
+        static_ips:
+          - <%= ENV['POWERDNS_HOST'] %>
+
+  - name: director
+    template: director
+    instances: 1
+    resource_pool: common
+    persistent_disk: 16384
+    networks:
+      - name: default
+        default: [dns, gateway]
+      - name: floating
+        static_ips:
+          - <%= ENV['BOSH_HOST'] %>
+
+  - name: registry
+    template: registry
+    instances: 1
+    resource_pool: common
+    networks:
+      - name: default
+        default: [dns, gateway]
+
+  - name: health_monitor
+    template: health_monitor
+    instances: 1
+    resource_pool: common
+    networks:
+      - name: default
+        default: [dns, gateway]
+
+properties:
+  nats:
+    address: 0.nats.default.bosh-openstack.microbosh
+    user: nats
+    password: nats
+
+  redis:
+    address: 0.redis.default.bosh-openstack.microbosh
+    password: redis
+
+  postgres: &bosh_db
+    host: 0.postgres.default.bosh-openstack.microbosh
+    user: postgres
+    password: postgres
+    database: bosh
+
+  dns:
+    address: <%= ENV['POWERDNS_HOST'] %>
+    db: *bosh_db
+    recursor: <%= ENV['MICRO_BOSH_HOST'] %>
+
+  blobstore_endpoint: &blobstore_endpoint
+    swift_provider: openstack
+    openstack_auth_url: <%= ENV['OS_AUTH_URL']%>
+    openstack_username: <%= ENV['OS_USER'] %>
+    openstack_api_key: <%= ENV['OS_PASS'] %>
+    openstack_tenant: <%= ENV['OS_TENANT'] %>
+
+  blobstore:
+    provider: swift
+    options:
+      <<: *blobstore_endpoint
+      container_name: bosh-source-blobs
+
+  compiled_package_cache:
+    options:
+      <<: *blobstore_endpoint
+      container_name: bosh-compiled-package-cache
+
+  director:
+    name: bosh
+    address: 0.director.default.bosh-openstack.microbosh
+    db: *bosh_db
+#    snapshot_schedule: false
+#    self_snapshot_schedule: false
+
+  registry:
+    address: 0.registry.default.bosh-openstack.microbosh
+    db: *bosh_db
+    http:
+      user: registry
+      password: registry
+
+  hm:
+    http:
+      user: hm
+      password: hm
+    director_account:
+      user: admin
+      password: admin
+    resurrector_enabled: true
+
+  ntp:
+    - ntp1.bskyb.com
+    - ntp2.bskyb.com
+
+  openstack:
+    auth_url: <%= ENV['OS_AUTH_URL'] %>
+    username: <%= ENV['OS_USER'] %>
+    api_key: <%= ENV['OS_PASS'] %>
+    tenant: <%= ENV['OS_TENANT'] %>
+    region:
+    default_security_groups: ["default"] # CHANGE
+    default_key_name: firstbosh    
+    state_timeout: 600
+    boot_from_volume: true

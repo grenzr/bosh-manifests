@@ -1,0 +1,707 @@
+---
+<%
+director_uuid = ENV['BOSH_UUID']
+protocol = "http"
+cf_release = ENV['RELEASE_VERSION']
+ip_address = ENV['CC_IP']
+common_password = "c1oudc0wc1oudc0w"
+root_domain = ENV['CC_ROOT_DOMAIN']
+deployment_name = "cloudfoundry"
+%>
+name: <%= deployment_name %>
+director_uuid: <%= director_uuid %>
+
+releases:
+ - name: cf
+   version: <%= cf_release %>
+ - name: cf-services
+   version: 0.1-dev
+ - name: cf-services-contrib
+   version: 2
+
+compilation:
+  workers: 6
+  network: default
+  reuse_compilation_vms: true
+  cloud_properties:
+    instance_type: m1.small
+
+update:
+  canaries: 1
+  canary_watch_time: 30000-300000
+  update_watch_time: 30000-300000
+  max_in_flight: 4
+
+networks:
+  - name: floating
+    type: vip
+    cloud_properties: {}
+  - name: default
+    type: dynamic
+    cloud_properties:
+      security_groups:
+      - cf-public
+      - cf-private
+
+resource_pools:
+  - name: common
+    network: default
+    size: 15
+    stemcell:
+      name: <%= ENV['STEMCELL_NAME'] %>
+      version: <%= ENV['STEMCELL_VERSION'] %>
+    cloud_properties:
+      instance_type: m1.small
+
+  - name: large
+    network: default
+    size: 4
+    stemcell:
+      name: <%= ENV['STEMCELL_NAME'] %>
+      version: <%= ENV['STEMCELL_VERSION'] %>
+    cloud_properties:
+      instance_type: m1.large
+
+jobs:
+  - name: nats
+    release: <%= ENV['RELEASE_NAME'] %>
+    template:
+      - nats
+    instances: 1
+    resource_pool: common
+    networks:
+      - name: default
+        default: [dns, gateway]
+
+  - name: syslog_aggregator
+    release: <%= ENV['RELEASE_NAME'] %>
+    template:
+      - syslog_aggregator
+    instances: 1
+    resource_pool: common
+    persistent_disk: 65536
+    networks:
+      - name: default
+        default: [dns, gateway]
+
+  - name: postgres
+    release: <%= ENV['RELEASE_NAME'] %>
+    template:
+      - postgres
+    instances: 1
+    resource_pool: common
+    persistent_disk: 65536
+    networks:
+      - name: default
+        default: [dns, gateway]
+    properties:
+      db: databases
+
+  - name: nfs_server
+    release: <%= ENV['RELEASE_NAME'] %>
+    template:
+      - debian_nfs_server
+    instances: 1
+    resource_pool: common
+    persistent_disk: 65536
+    networks:
+      - name: default
+        default: [dns, gateway]
+
+  - name: uaa
+    release: <%= ENV['RELEASE_NAME'] %>
+    template:
+      - uaa
+    instances: 1
+    resource_pool: common
+    networks:
+      - name: default
+        default: [dns, gateway]
+
+  - name: login
+    release: <%= ENV['RELEASE_NAME'] %>  
+    template:
+      - login
+    instances: 1
+    resource_pool: common
+    networks:
+      - name: default
+        default: [dns, gateway]
+
+  # - name: loggregator
+  #   release: <%= ENV['RELEASE_NAME'] %>
+  #   template: loggregator
+  #   instances: 1  # Scale out as neccessary
+  #   resource_pool: common
+  #   networks:
+  #     - name: default
+  #       default: [dns, gateway]
+
+  # - name: loggregator_router
+  #   release: <%= ENV['RELEASE_NAME'] %>  
+  #   template: loggregatorrouter
+  #   instances: 1  # Only one loggregator router per CF installation
+  #   resource_pool: common
+  #   networks:
+  #     - name: default
+  #       default: [dns, gateway]
+
+  - name: cloud_controller
+    release: <%= ENV['RELEASE_NAME'] %>
+    template:
+      - cloud_controller_ng
+    instances: 1
+    resource_pool: common
+    networks:
+      - name: default
+        default: [dns, gateway]
+    properties:
+      ccdb: ccdb
+
+  - name: router
+    release: <%= ENV['RELEASE_NAME'] %>
+    template:
+      - gorouter
+    instances: 1
+    resource_pool: common
+    networks:
+      - name: default
+        default: [dns, gateway]
+      - name: floating
+        static_ips:
+          - <%= ip_address %>
+
+  - name: health_manager
+    release: <%= ENV['RELEASE_NAME'] %>
+    template:
+      - health_manager_next
+    instances: 1
+    resource_pool: common
+    networks:
+      - name: default
+        default: [dns, gateway]
+
+  - name: dea
+    release: <%= ENV['RELEASE_NAME'] %>
+    template: 
+      - dea_next
+      # - dea_logging_agent
+    instances: 4
+    resource_pool: large
+    networks:
+      - name: default
+        default: [dns, gateway]
+
+  - name: service_gateways
+    release: cf-services-contrib
+    template:
+    - mongodb_gateway
+    - postgresql_gateway_ng
+    - redis_gateway
+    - rabbit_gateway
+    instances: 1
+    resource_pool: common
+    networks:
+      - name: default
+        default: [dns, gateway]
+    properties:
+      # Service credentials
+      uaa_client_id: "cf"
+      uaa_endpoint: http://uaa.<%= root_domain %>
+      uaa_client_auth_credentials:
+        username: admin
+        password: <%= common_password %>
+
+
+  - name: services_mysql
+    release: cf-services
+    template:
+      - mysql_gateway
+      - mysql_node
+    instances: 1
+    resource_pool: common
+    persistent_disk: 16384
+    networks:
+      - name: default
+        default: [dns, gateway]
+    properties:
+      uaa_client_id: "cf"
+      uaa_endpoint: http://uaa.<%= root_domain %>
+      uaa_client_auth_credentials:
+        username: admin
+        password: <%= common_password %>    
+      mysql_node:
+        plan: default
+
+  - name: services_postgres
+    release: cf-services-contrib
+    template:
+      - postgresql_node_ng
+    instances: 1
+    resource_pool: common
+    persistent_disk: 16384
+    networks:
+      - name: default
+        default: [dns, gateway]
+    properties:
+      postgresql_node:
+        plan: default
+
+  - name: services_mongo
+    release: cf-services-contrib
+    template:
+      - mongodb_node_ng
+    instances: 1
+    resource_pool: common
+    persistent_disk: 16384
+    networks:
+      - name: default
+        default: [dns, gateway]
+    properties:
+      plan: default
+
+  - name: services_redis
+    release: cf-services-contrib
+    template:
+      - redis_node_ng
+    instances: 1
+    resource_pool: common
+    persistent_disk: 16384
+    networks:
+      - name: default
+        default: [dns, gateway]
+    properties:
+      plan: default
+
+  - name: services_rabbit
+    release: cf-services-contrib
+    template:
+      - rabbit_node_ng
+    instances: 1
+    resource_pool: common
+    persistent_disk: 16384
+    networks:
+      - name: default
+        default: [dns, gateway]
+    properties:
+      plan: default
+
+properties:
+
+  openstack:
+    auth_url: <%= ENV['OS_HOST'] %>
+    username: <%= ENV['OS_USER'] %>
+    api_key: <%= ENV['OS_PASS'] %>
+    tenant: <%= ENV['OS_TENANT'] %>
+    #region: us-west
+    default_key_name: firstbosh
+    default_security_groups: ["bosh"]
+    #private_key: /home/bosh/.ssh/bosh.pem
+
+  blobstore_endpoint: &blobstore_endpoint
+    # provider: Openstack
+    swift_provider: openstack
+    openstack_auth_url: http://<%= ENV['OS_HOST']%>:5000/v2.0
+    openstack_username: <%= ENV['OS_USER'] %>
+    openstack_api_key: <%= ENV['OS_PASS'] %>
+    openstack_tenant: <%= ENV['OS_TENANT'] %>
+
+  domain: <%= root_domain %>
+  system_domain: <%= root_domain %>
+  system_domain_organization: "demo"
+  app_domains:
+    - <%= root_domain %>
+  support_address: http://support.<%= root_domain %>
+  description: "Cloud Foundry v2 sponsored by Pivotal"
+
+  networks:
+    apps: default
+    management: default
+
+  nats:
+    address: 0.nats.default.<%= deployment_name %>.bosh
+    port: 4222
+    user: nats
+    password: <%= common_password %>
+    authorization_timeout: 10
+
+  router:
+    status:
+      port: 8080
+      user: gorouter
+      password: <%= common_password %>
+
+  dea: &dea
+    memory_mb: 7680
+    memory_overcommit_factor: 4
+    disk_mb: 16384
+    directory_server_protocol: <%= protocol %>
+    mtu: 1454
+
+  dea_next: *dea
+
+  syslog_aggregator:
+    address: 0.syslog-aggregator.default.<%= deployment_name %>.bosh
+    port: 54321
+
+  nfs_server:
+    address: 0.nfs-server.default.<%= deployment_name %>.bosh
+    network: "*.<%= deployment_name %>.bosh"
+    idmapd_domain: dfw2
+
+  debian_nfs_server:
+    no_root_squash: true
+
+  # loggregator:
+  #   router: 0.loggregator-router.default.<%= deployment_name %>.bosh:3456  # host:port that will receive messages emitted by Sources
+  #   status:
+  #     user: loggregator
+  #     password: <%= common_password %>
+  #     port: 54345    
+  #   servers: 
+  #     - 0.loggregator.default.<%= deployment_name %>.bosh:3456  # 
+
+  databases: &databases
+    db_scheme: postgres
+    address: 0.postgres.default.<%= deployment_name %>.bosh
+    port: 5524
+    roles:
+      - tag: admin
+        name: ccadmin
+        password: <%= common_password %>
+      - tag: admin
+        name: uaaadmin
+        password: <%= common_password %>
+    databases:
+      - tag: cc
+        name: ccdb
+        citext: true
+      - tag: uaa
+        name: uaadb
+        citext: true
+
+  ccdb: &ccdb
+    db_scheme: postgres
+    address: 0.postgres.default.<%= deployment_name %>.bosh
+    port: 5524
+    roles:
+      - tag: admin
+        name: ccadmin
+        password: <%= common_password %>
+    databases:
+      - tag: cc
+        name: ccdb
+        citext: true
+
+  ccdb_ng: *ccdb
+
+  uaadb:
+    db_scheme: postgresql
+    address: 0.postgres.default.<%= deployment_name %>.bosh
+    port: 5524
+    roles:
+      - tag: admin
+        name: uaaadmin
+        password: <%= common_password %>
+    databases:
+      - tag: uaa
+        name: uaadb
+        citext: true
+
+  cc_api_version: v2
+
+  cc: &cc
+    logging_level: debug
+    external_host: ccng
+    srv_api_uri: <%= protocol %>://api.<%= root_domain %>
+    cc_partition: default
+    db_encryption_key: <%= common_password %>
+    bootstrap_admin_email: "ryan.grenz@bskyb.com"
+    bulk_api_password: <%= common_password %>
+    uaa_resource_id: cloud_controller
+    staging_upload_user: upload
+    staging_upload_password: <%= common_password %>
+    buildpacks:
+      resource_directory_key: cf-att-io-cc-buildpacks
+      #fog_connection: *blobstore_endpoint
+    resource_pool:
+      resource_directory_key: cf-att-io-cc-resources
+      #fog_connection: *blobstore_endpoint
+    packages:
+      app_package_directory_key: cf-att-io-cc-packages
+      #fog_connection: *blobstore_endpoint
+    droplets:
+      droplet_directory_key: cf-att-io-cc-droplets
+      #fog_connection: *blobstore_endpoint
+    default_quota_definition: runaway
+
+  ccng: *cc
+
+  login:
+    enabled: true
+    url: http://login.<%= root_domain %>
+    protocol: http
+    links:
+      home: http://me.<%= root_domain %>
+      passwd: http://me..<%= root_domain %>
+      signup: http://me..<%= root_domain %>
+
+  uaa:
+    url: <%= protocol %>://uaa.<%= root_domain %>
+    no_ssl: <%= protocol == "http" %>
+    catalina_opts: -Xmx768m -XX:MaxPermSize=256m
+    resource_id: account_manager
+    jwt:
+      signing_key: |
+        -----BEGIN RSA PRIVATE KEY-----
+        MIICXAIBAAKBgQDHFr+KICms+tuT1OXJwhCUmR2dKVy7psa8xzElSyzqx7oJyfJ1
+        JZyOzToj9T5SfTIq396agbHJWVfYphNahvZ/7uMXqHxf+ZH9BL1gk9Y6kCnbM5R6
+        0gfwjyW1/dQPjOzn9N394zd2FJoFHwdq9Qs0wBugspULZVNRxq7veq/fzwIDAQAB
+        AoGBAJ8dRTQFhIllbHx4GLbpTQsWXJ6w4hZvskJKCLM/o8R4n+0W45pQ1xEiYKdA
+        Z/DRcnjltylRImBD8XuLL8iYOQSZXNMb1h3g5/UGbUXLmCgQLOUUlnYt34QOQm+0
+        KvUqfMSFBbKMsYBAoQmNdTHBaz3dZa8ON9hh/f5TT8u0OWNRAkEA5opzsIXv+52J
+        duc1VGyX3SwlxiE2dStW8wZqGiuLH142n6MKnkLU4ctNLiclw6BZePXFZYIK+AkE
+        xQ+k16je5QJBAN0TIKMPWIbbHVr5rkdUqOyezlFFWYOwnMmw/BKa1d3zp54VP/P8
+        +5aQ2d4sMoKEOfdWH7UqMe3FszfYFvSu5KMCQFMYeFaaEEP7Jn8rGzfQ5HQd44ek
+        lQJqmq6CE2BXbY/i34FuvPcKU70HEEygY6Y9d8J3o6zQ0K9SYNu+pcXt4lkCQA3h
+        jJQQe5uEGJTExqed7jllQ0khFJzLMx0K6tj0NeeIzAaGCQz13oo2sCdeGRHO4aDh
+        HH6Qlq/6UOV5wP8+GAcCQFgRCcB+hrje8hfEEefHcFpyKH+5g1Eu1k0mLrxK2zd+
+        4SlotYRHgPCEubokb2S1zfZDWIXW3HmggnGgM949TlY=
+        -----END RSA PRIVATE KEY-----
+      verification_key: |
+        -----BEGIN PUBLIC KEY-----
+        MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDHFr+KICms+tuT1OXJwhCUmR2d
+        KVy7psa8xzElSyzqx7oJyfJ1JZyOzToj9T5SfTIq396agbHJWVfYphNahvZ/7uMX
+        qHxf+ZH9BL1gk9Y6kCnbM5R60gfwjyW1/dQPjOzn9N394zd2FJoFHwdq9Qs0wBug
+        spULZVNRxq7veq/fzwIDAQAB
+        -----END PUBLIC KEY-----
+    cc:
+      client_secret: <%= common_password %>
+    admin:
+      client_secret: <%= common_password %>
+    batch:
+      username: batch
+      password: <%= common_password %>
+    client:
+      autoapprove:
+        - cf
+        - kratos
+        - login
+    clients:
+      cf:
+        override: true
+        authorized-grant-types: client_credentials,password,implicit,refresh_token
+        authorities: uaa.none
+        scope: cloud_controller.read,cloud_controller.write,openid,password.write,cloud_controller.admin,scim.read,scim.write
+        access-token-validity: 7200
+        refresh-token-validity: 1209600
+      kratos:
+        override: true
+        id: kratos
+        scope:  scim.write,scim.read,openid,cloud_controller.read,cloud_controller.write,password.write,cloud_controller.admin
+        secret: <%= common_password %>
+        authorities: scim.write,scim.read,openid,cloud_controller.read,cloud_controller.write,password.write,uaa.admin,uaa.none,cloud_controller.admin
+        authorized-grant-types: authorization_code,client_credentials,password,implicit
+        access-token-validity: 1209600
+        refresh-token-validity: 1209600
+      admin:
+        secret: <%= common_password %>
+        authorized-grant-types: client_credentials
+        authorities: clients.read,clients.write,clients.secret,password.write,scim.read,uaa.admin
+      login:
+        id: login
+        override: true
+        autoapprove: true
+        authorities: oauth.login
+        authorized-grant-types: authorization_code,client_credentials,refresh_token
+        scope: openid
+        secret: <%= common_password %>                
+    scim:
+      userids_enabled: true
+      users:
+      - admin|<%= common_password %>|scim.write,scim.read,openid,cloud_controller.admin,uaa.admin,password.write
+      - services|<%= common_password %>|scim.write,scim.read,openid,cloud_controller.admin
+
+  service_plans:
+    mysql:
+      default:
+        description: "Shared server, shared VM, 1MB memory, 10MB storage, 10 connections"
+        free: true
+        job_management:
+          high_water: 900
+          low_water: 100
+        configuration:
+          capacity: 500
+          max_db_size: 10
+          key_buffer: 512
+          innodb_buffer_pool_size: 512
+          max_allowed_packet: 16
+          thread_cache_size: 128
+          query_cache_size: 128
+          max_long_query: 3
+          max_long_tx: 30
+          max_clients: 10
+          max_connections: 1000
+          table_open_cache: 2000
+          innodb_tables_per_database: 50
+          connection_pool_size:
+            min: 5
+            max: 10
+          backup:
+           # enable: true
+          lifecycle:
+           # enable: true
+            serialization: enable
+            snapshot:
+              quota: 1
+          warden:
+            enable: true
+
+    mongodb:
+      default:
+        description: "Developer, shared VM, 250MB storage, 20 connections"
+        free: true
+        job_management:
+          high_water: 230
+          low_water: 20
+        configuration:
+          capacity: 125
+          max_clients: 20
+          quota_files: 4
+          quota_data_size: 240
+          enable_journaling: true
+          backup:
+            enable: true
+          lifecycle:
+            enable: true
+            serialization: enable
+            snapshot:
+              quota: 1
+
+    postgresql:
+      default:
+        description: "Developer, 250MB storage, 10 connections"
+        free: true
+        job_management:
+          high_water: 230
+          low_water: 20
+        configuration:
+          capacity: 125
+          max_clients: 10
+          quota_files: 4
+          quota_data_size: 240
+          enable_journaling: true
+          backup:
+            enable: false
+          lifecycle:
+            enable: false
+            serialization: enable
+            snapshot:
+              quota: 1
+
+    redis:
+      default:
+        description: "Developer, 250MB storage, 100 connections"
+        free: true
+        job_management:
+          high_water: 230
+          low_water: 20
+        configuration:
+          capacity: 125
+          max_clients: 100
+          max_memory: 128
+          memory_overhead: 200
+          quota_files: 4
+          quota_data_size: 240
+          enable_journaling: true
+          backup:
+            enable: false
+          lifecycle:
+            enable: false
+            serialization: enable
+            snapshot:
+              quota: 1
+
+
+    rabbit:
+      default:
+        description: "Developer, 250MB storage, 10 connections"
+        free: true
+        job_management:
+          high_water: 230
+          low_water: 20
+        configuration:
+          capacity: 125
+          max_clients: 10
+          quota_files: 4
+          quota_data_size: 240
+          enable_journaling: true
+          backup:
+            enable: false
+          lifecycle:
+            enable: false
+            serialization: enable
+            snapshot:
+              quota: 1
+
+  mysql_gateway:
+    token: uiasdfkasdfophasdfkjadsf
+    default_plan: "100"
+    supported_versions: ["5.5"]
+    version_aliases:
+      current: "5.5"
+    cc_api_version: v2
+  mysql_node:
+    password: adfsadfsadsv
+    supported_versions: ["5.5"]
+    default_version: "5.5"
+    max_tmp: 1024
+
+  mongodb_gateway:
+    token: MONGODB_SERVICE_TOKEN # CHANGE - the token you use later with `cf create-service-auth-token`
+    default_plan: default
+    supported_versions: ["2.2"]
+    version_aliases:
+      current: "2.2"
+    cc_api_version: v2
+  mongodb_node:
+    supported_versions: ["2.2"]
+    default_version: "2.2"
+    max_tmp: 900
+
+  postgresql_gateway:
+    token: POSTGRESQL_SERVICE_TOKEN # CHANGE - the token you use later with `cf create-service-auth-token`
+    default_plan: default
+    supported_versions: ["9.2"]
+    version_aliases:
+      current: "9.2"
+    cc_api_version: v2
+  postgresql_node:
+    supported_versions: ["9.2"]
+    default_version: "9.2"
+    max_tmp: 900
+    password: POSTGRESQL_ROOT_PASSWORD # CHANGE
+
+  redis_gateway:
+    token: REDIS_SERVICE_TOKEN # CHANGE - the token you use later with `cf create-service-auth-token`
+    default_plan: default
+    supported_versions: ["2.6"]
+    version_aliases:
+      current: "2.6"
+    cc_api_version: v2
+  redis_node:
+    supported_versions: ["2.6"]
+    default_version: "2.6"
+    max_tmp: 900
+
+  rabbit_gateway:
+    token: RABBIT_SERVICE_TOKEN # CHANGE - the token you use later with `cf create-service-auth-token`
+    default_plan: "default"
+    supported_versions: ["3.0"]
+    version_aliases:
+      current: "3.0"
+    cc_api_version: v2
+  rabbit_node:
+    supported_versions: ["3.0"]
+    default_version: "3.0"
+    max_tmp: 900
