@@ -289,7 +289,7 @@ jobs:
 properties:
 
   openstack:
-    auth_url: <%= ENV['OS_HOST'] %>
+    auth_url: <%= ENV['OS_AUTH_URL'] %>
     username: <%= ENV['OS_USER'] %>
     api_key: <%= ENV['OS_PASS'] %>
     tenant: <%= ENV['OS_TENANT'] %>
@@ -301,7 +301,7 @@ properties:
   blobstore_endpoint: &blobstore_endpoint
     # provider: Openstack
     swift_provider: openstack
-    openstack_auth_url: http://<%= ENV['OS_HOST']%>:5000/v2.0
+    openstack_auth_url: <%= ENV['OS_AUTH_URL']%>
     openstack_username: <%= ENV['OS_USER'] %>
     openstack_api_key: <%= ENV['OS_PASS'] %>
     openstack_tenant: <%= ENV['OS_TENANT'] %>
